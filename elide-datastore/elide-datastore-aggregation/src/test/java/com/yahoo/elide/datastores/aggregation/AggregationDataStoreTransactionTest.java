@@ -16,16 +16,20 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
+
+import com.github.jknack.handlebars.Handlebars;
 import com.yahoo.elide.core.RequestScope;
 import com.yahoo.elide.core.pagination.PaginationImpl;
 import com.yahoo.elide.core.request.EntityProjection;
 import com.yahoo.elide.core.request.Pagination;
+import com.yahoo.elide.core.security.User;
 import com.yahoo.elide.datastores.aggregation.cache.Cache;
 import com.yahoo.elide.datastores.aggregation.cache.QueryKeyExtractor;
 import com.yahoo.elide.datastores.aggregation.core.QueryLogger;
 import com.yahoo.elide.datastores.aggregation.core.QueryResponse;
 import com.yahoo.elide.datastores.aggregation.example.PlayerStats;
 import com.yahoo.elide.datastores.aggregation.framework.SQLUnitTest;
+import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.yahoo.elide.datastores.aggregation.query.Query;
 import com.yahoo.elide.datastores.aggregation.query.QueryResult;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.SQLQueryEngine;
@@ -38,8 +42,12 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.IOException;
+import java.security.Principal;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 @ExtendWith(MockitoExtension.class)
 class AggregationDataStoreTransactionTest extends SQLUnitTest {
@@ -49,6 +57,7 @@ class AggregationDataStoreTransactionTest extends SQLUnitTest {
     @Mock private RequestScope scope;
     @Mock private Cache cache;
     @Mock private QueryLogger queryLogger;
+    @Mock private MetaDataStore metaDataStore;
 
     private Query query = Query.builder().source(playerStatsTable).build();
     private final String queryKey = QueryKeyExtractor.extractKey(query);
@@ -75,6 +84,7 @@ class AggregationDataStoreTransactionTest extends SQLUnitTest {
     @BeforeEach
     public void setUp() {
         when(queryEngine.beginTransaction()).thenReturn(qeTransaction);
+        when(queryEngine.getMetaDataStore()).thenReturn(metaDataStore);
     }
 
     @Test
@@ -265,5 +275,38 @@ class AggregationDataStoreTransactionTest extends SQLUnitTest {
                 new MyAggregationDataStoreTransaction(queryEngine, cache, queryLogger);
         transaction.cancel(scope);
         Mockito.verify(queryLogger, times(1)).cancelQuery(Mockito.eq(scope.getRequestId()));
+    }
+
+    @Test
+    public void testPopulateUserContext() throws IOException {
+        User user = new User(new Principal() {
+            @Override
+            public String getName() {
+                return "foo";
+            }
+        });
+        when(scope.getUser()).thenReturn(user);
+
+        Map<String, Object> context = new HashMap<>();
+        Handlebars handlebars = new Handlebars();
+        try (AggregationDataStoreTransaction transaction =
+                        new MyAggregationDataStoreTransaction(queryEngine, cache, queryLogger)) {
+            transaction.populateUserContext(scope, context);
+        }
+        assertEquals("foo", handlebars.compileInline("{{$$user.identity}}").apply(context));
+    }
+
+    @Test
+    public void testPopulateRequestContext() throws IOException {
+
+        when(metaDataStore.getTable(any())).thenReturn(playerStatsTable);
+        Map<String, Object> context = new HashMap<>();
+        Handlebars handlebars = new Handlebars();
+        EntityProjection entityProjection = EntityProjection.builder().type(playerStatsType).build();
+        try (AggregationDataStoreTransaction transaction =
+                        new MyAggregationDataStoreTransaction(queryEngine, cache, queryLogger)) {
+            transaction.populateRequestContext(entityProjection, context);
+        }
+        assertEquals(playerStatsTable.getName(), handlebars.compileInline("{{$$request.table.name}}").apply(context));
     }
 }

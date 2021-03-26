@@ -11,6 +11,7 @@ import com.yahoo.elide.core.exceptions.BadRequestException;
 import com.yahoo.elide.core.exceptions.HttpStatus;
 import com.yahoo.elide.core.exceptions.HttpStatusException;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.core.request.Argument;
 import com.yahoo.elide.core.request.EntityProjection;
 import com.yahoo.elide.datastores.aggregation.cache.Cache;
 import com.yahoo.elide.datastores.aggregation.cache.QueryKeyExtractor;
@@ -22,10 +23,15 @@ import com.yahoo.elide.datastores.aggregation.metadata.models.Table;
 import com.yahoo.elide.datastores.aggregation.query.Query;
 import com.yahoo.elide.datastores.aggregation.query.QueryResult;
 import com.google.common.annotations.VisibleForTesting;
+
+import lombok.NonNull;
 import lombok.ToString;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Transaction handler for {@link AggregationDataStore}.
@@ -77,7 +83,10 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
         QueryResult result = null;
         QueryResponse response = null;
         String cacheKey = null;
+        Map<String, Object> context = new HashMap<>();
         try {
+            populateUserContext(scope, context);
+            populateRequestContext(entityProjection, context);
             queryLogger.acceptQuery(scope.getRequestId(), scope.getUser(), scope.getHeaders(),
                     scope.getApiVersion(), scope.getQueryParams(), scope.getPath());
             Query query = buildQuery(entityProjection, scope);
@@ -145,6 +154,42 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
         }
 
         return query;
+    }
+
+    void populateUserContext(RequestScope scope, Map<String, Object> context) {
+        Map<String, Object> userMap = new HashMap<>();
+        context.put("$$user", userMap);
+        userMap.put("identity", scope.getUser().getName());
+    }
+
+    void populateRequestContext(EntityProjection entityProjection, Map<String, Object> context) {
+
+        Map<String, Object> requestMap = new HashMap<>();
+        context.put("$$request", requestMap);
+        Map<String, Object> tableMap = new HashMap<>();
+        requestMap.put("table", tableMap);
+        Map<String, Object> columnsMap = new HashMap<>();
+        requestMap.put("columns", columnsMap);
+
+        Table table = metaDataStore.getTable(entityProjection.getType());
+
+        // Populate $$request.table context
+        tableMap.put("name", table.getName());
+        tableMap.put("args", entityProjection.getArguments().stream()
+                        .collect(Collectors.toMap(Argument::getName, Argument::getValue)));
+
+        // Populate $$request.columns context
+        entityProjection.getAttributes().forEach(attr -> {
+            @NonNull
+            String columnName = attr.getName();
+            Map<String, Object> columnMap = new HashMap<>();
+            columnsMap.put(columnName, columnMap);
+
+            // Populate $$request.columns.column context
+            columnMap.put("name", attr.getName());
+            columnMap.put("args", attr.getArguments().stream()
+                            .collect(Collectors.toMap(Argument::getName, Argument::getValue)));
+        });
     }
 
     @Override
